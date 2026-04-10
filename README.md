@@ -276,7 +276,7 @@ npm run build
 
 2. Crear archivo de entorno:
 
-- `/etc/activecampaign-contact-sync.env`
+- `/etc/activecampaign-api.env`
 
 3. Copiar unit file:
 
@@ -302,9 +302,9 @@ After=network.target
 [Service]
 Type=simple
 User=www-data
-WorkingDirectory=/opt/activecampaign-contact-sync-api
-EnvironmentFile=/etc/activecampaign-contact-sync.env
-ExecStart=/usr/bin/node /opt/activecampaign-contact-sync-api/dist/src/server.js
+WorkingDirectory=/opt/activecampaign-api
+EnvironmentFile=/etc/activecampaign-api.env
+ExecStart=/usr/bin/node /opt/activecampaign-api/dist/src/server.js
 Restart=on-failure
 RestartSec=3
 KillSignal=SIGTERM
