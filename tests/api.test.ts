@@ -35,7 +35,7 @@ function buildPayload(overrides: Record<string, unknown> = {}): Record<string, u
   };
 }
 
-function buildSuccessfulFetch(listIds: number[] = [1], contactId = "123") {
+function buildSuccessfulFetch(listIds: number[] = [1], contactId = "123", tagIds: number[] = []) {
   const fetchMock = vi.fn();
   fetchMock.mockResolvedValueOnce(jsonResponse(200, { contact: { id: contactId } }));
   for (const listId of listIds) {
@@ -46,6 +46,17 @@ function buildSuccessfulFetch(listIds: number[] = [1], contactId = "123") {
           list: String(listId),
           contact: contactId,
           status: "1"
+        }
+      })
+    );
+  }
+  for (const tagId of tagIds) {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(201, {
+        contactTag: {
+          id: String(tagId),
+          contact: contactId,
+          tag: String(tagId)
         }
       })
     );
@@ -104,6 +115,27 @@ describe("POST /contacts/sync-and-subscribe", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it("syncs, subscribes and tags successfully", async () => {
+    const fetchMock = buildSuccessfulFetch([1, 3], "123", [10, 20]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1, 3], tag_ids: [10, 20] }));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      request_id: expect.any(String),
+      action: "synced",
+      contact_id: 123,
+      subscribed_list_ids: [1, 3],
+      meta: {
+        tagged_tag_ids: [10, 20]
+      },
+      warnings: []
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
   it("deduplicates list_ids before provider calls", async () => {
     const fetchMock = buildSuccessfulFetch([1, 3]);
     const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
@@ -113,6 +145,29 @@ describe("POST /contacts/sync-and-subscribe", () => {
     expect(response.status).toBe(200);
     expect(response.body.subscribed_list_ids).toEqual([1, 3]);
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not call contactTags when tag_ids are omitted", async () => {
+    const fetchMock = buildSuccessfulFetch([1, 3]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1, 3] }));
+
+    expect(response.status).toBe(200);
+    expect(response.body.meta).toEqual({});
+    const calledUrls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(calledUrls.some((url) => url.endsWith("/contactTags"))).toBe(false);
+  });
+
+  it("deduplicates tag_ids before provider calls", async () => {
+    const fetchMock = buildSuccessfulFetch([1], "123", [10, 20]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [10, 10, 20, 20] }));
+
+    expect(response.status).toBe(200);
+    expect(response.body.meta).toEqual({ tagged_tag_ids: [10, 20] });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
   it("returns validation failure", async () => {
@@ -180,6 +235,26 @@ describe("POST /contacts/sync-and-subscribe", () => {
     expect(response.body.error.code).toBe("validation_error");
   });
 
+  it("rejects invalid tag_ids values", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [1, "bad"] }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
+  it("rejects empty tag_ids when provided", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [] }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
   it("rejects empty list_ids", async () => {
     const fetchMock = vi.fn();
     const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
@@ -238,6 +313,36 @@ describe("POST /contacts/sync-and-subscribe", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("replays when normalized tag_ids are equivalent", async () => {
+    const fetchMock = buildSuccessfulFetch([1], "123", [10]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const key = randomUUID();
+
+    const firstResponse = await postSync(
+      app,
+      buildPayload({
+        list_ids: [1],
+        tag_ids: [10, 10]
+      }),
+      key
+    );
+
+    const secondResponse = await postSync(
+      app,
+      buildPayload({
+        list_ids: [1],
+        tag_ids: [10]
+      }),
+      key
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(secondResponse.headers["x-idempotent-replay"]).toBe("true");
+    expect(secondResponse.body).toEqual(firstResponse.body);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("returns idempotency conflict for same key and different body", async () => {
     const fetchMock = buildSuccessfulFetch([1]);
     const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
@@ -245,6 +350,19 @@ describe("POST /contacts/sync-and-subscribe", () => {
 
     const firstResponse = await postSync(app, buildPayload({ list_ids: [1] }), key);
     const secondResponse = await postSync(app, buildPayload({ list_ids: [2] }), key);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(409);
+    expect(secondResponse.body.error.code).toBe("idempotency_conflict");
+  });
+
+  it("returns idempotency conflict for same key and different tag_ids", async () => {
+    const fetchMock = buildSuccessfulFetch([1], "123", [10]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const key = randomUUID();
+
+    const firstResponse = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [10] }), key);
+    const secondResponse = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [20] }), key);
 
     expect(firstResponse.status).toBe(200);
     expect(secondResponse.status).toBe(409);
@@ -263,6 +381,51 @@ describe("POST /contacts/sync-and-subscribe", () => {
 
     expect(response.status).toBe(502);
     expect(response.body.error.code).toBe("provider_error");
+  });
+
+  it("returns provider failure when tagging fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { contact: { id: "123" } }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          contactList: { id: "1", list: "1", contact: "123", status: "1" }
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(500, {
+          errors: [{ title: "Provider error", detail: "Tag failed" }]
+        })
+      );
+
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const response = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [10] }));
+
+    expect(response.status).toBe(502);
+    expect(response.body.error.code).toBe("provider_error");
+    expect(response.body.error.details.tag_id).toBe(10);
+  });
+
+  it("treats duplicate contact tag as success", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { contact: { id: "123" } }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          contactList: { id: "1", list: "1", contact: "123", status: "1" }
+        })
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(422, {
+          errors: [{ title: "Unprocessable", detail: "Contact already has this tag" }]
+        })
+      );
+
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const response = await postSync(app, buildPayload({ list_ids: [1], tag_ids: [10] }));
+
+    expect(response.status).toBe(200);
+    expect(response.body.meta).toEqual({ tagged_tag_ids: [10] });
   });
 
   it("enforces rate limit per IP", async () => {

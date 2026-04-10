@@ -14,6 +14,7 @@ Este proyecto encapsula el flujo de contactos en ActiveCampaign:
 - validacion y normalizacion del payload
 - sync de contacto (create/update) por email
 - suscripcion del contacto a una o mas listas enviadas por frontend
+- aplicacion opcional de etiquetas por `tag_ids`
 - respuesta uniforme de exito y error
 - protecciones minimas de seguridad, anti-spam e idempotencia
 
@@ -105,6 +106,28 @@ npm test
 
 - `POST /contacts/sync-and-subscribe`
 
+Body base:
+
+- `email` (requerido)
+- `list_ids` (requerido)
+- `tag_ids` (opcional, array de enteros positivos)
+- resto de campos opcionales de contacto/utm
+
+### Etiquetas (`tag_ids`)
+
+Comportamiento actual:
+
+- permite aplicar etiquetas cuando el contacto se crea o se actualiza (el endpoint siempre hace `contact/sync`)
+- permite aplicar multiples etiquetas en el mismo request
+- deduplica `tag_ids` repetidos
+- si ActiveCampaign responde duplicado de tag ya aplicado, se trata como exito idempotente
+- usa IDs de tag (no nombres)
+
+No incluido en esta API:
+
+- endpoint para consultar si un contacto ya tiene una etiqueta puntual
+- resolucion nombre de tag -> id (si se necesita, se resuelve antes en backend usando `/tags`)
+
 ## Contrato de respuesta
 
 ### Exito
@@ -116,7 +139,9 @@ npm test
   "action": "synced",
   "contact_id": 123,
   "subscribed_list_ids": [1, 3, 7],
-  "meta": {},
+  "meta": {
+    "tagged_tag_ids": [10, 20]
+  },
   "warnings": []
 }
 ```
@@ -244,7 +269,8 @@ curl -i -s -X POST http://localhost:3000/contacts/sync-and-subscribe \
   -d '{
     "email":"user@example.com",
     "first_name":"Juan",
-    "list_ids":[1,3,7]
+    "list_ids":[1,3,7],
+    "tag_ids":[10,20]
   }'
 ```
 
@@ -350,3 +376,4 @@ Referencias oficiales usadas:
 
 - `POST /contact/sync`: https://developers.activecampaign.com/reference/sync-a-contacts-data
 - `POST /contactLists`: https://developers.activecampaign.com/reference/update-list-status-for-contact
+- `POST /contactTags`: https://developers.activecampaign.com/reference/create-contact-tag

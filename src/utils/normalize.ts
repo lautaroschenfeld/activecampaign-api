@@ -19,6 +19,9 @@ export function normalizeContactSyncInput(input: ContactSyncRequest): Normalized
   const listIds = Array.from(
     new Set(input.list_ids.filter((value) => Number.isInteger(value) && value > 0))
   );
+  const tagIds = input.tag_ids
+    ? Array.from(new Set(input.tag_ids.filter((value) => Number.isInteger(value) && value > 0)))
+    : undefined;
 
   return {
     email: normalizeEmail(input.email),
@@ -28,6 +31,7 @@ export function normalizeContactSyncInput(input: ContactSyncRequest): Normalized
     country: normalizeOptionalString(input.country),
     consent: input.consent,
     list_ids: listIds,
+    tag_ids: tagIds && tagIds.length > 0 ? tagIds : undefined,
     utm_source: normalizeOptionalString(input.utm_source),
     utm_medium: normalizeOptionalString(input.utm_medium),
     utm_campaign: normalizeOptionalString(input.utm_campaign),

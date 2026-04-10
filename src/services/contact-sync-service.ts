@@ -4,6 +4,7 @@ import { ActiveCampaignService } from "./activecampaign-service";
 export interface ContactSyncResult {
   contactId: number;
   subscribedListIds: number[];
+  taggedTagIds: number[];
   meta: Record<string, unknown>;
   warnings: string[];
 }
@@ -17,11 +18,15 @@ export class ContactSyncService {
       contactId,
       payload.list_ids
     );
+    const { taggedTagIds } = payload.tag_ids?.length
+      ? await this.activeCampaignService.addContactToTags(contactId, payload.tag_ids)
+      : { taggedTagIds: [] };
 
     return {
       contactId,
       subscribedListIds,
-      meta: {},
+      taggedTagIds,
+      meta: taggedTagIds.length > 0 ? { tagged_tag_ids: taggedTagIds } : {},
       warnings: []
     };
   }

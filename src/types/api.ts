@@ -6,6 +6,7 @@ export interface ContactSyncRequest {
   country?: string;
   consent?: boolean;
   list_ids: number[];
+  tag_ids?: number[];
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;
@@ -23,6 +24,7 @@ export interface NormalizedContactSyncRequest {
   country?: string;
   consent?: boolean;
   list_ids: number[];
+  tag_ids?: number[];
   utm_source?: string;
   utm_medium?: string;
   utm_campaign?: string;

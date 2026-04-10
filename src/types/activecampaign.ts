@@ -34,6 +34,21 @@ export interface ActiveCampaignContactListResponse {
   };
 }
 
+export interface ActiveCampaignContactTagRequest {
+  contactTag: {
+    contact: string;
+    tag: string;
+  };
+}
+
+export interface ActiveCampaignContactTagResponse {
+  contactTag?: {
+    id?: string;
+    contact?: string;
+    tag?: string;
+  };
+}
+
 export interface ActiveCampaignErrorResponse {
   errors?: Array<{
     title?: string;

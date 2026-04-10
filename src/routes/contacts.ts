@@ -16,6 +16,7 @@ const contactSyncSchema = z
     country: z.string().trim().max(100).optional(),
     consent: z.boolean().optional(),
     list_ids: z.array(z.number().int().positive()).min(1),
+    tag_ids: z.array(z.number().int().positive()).min(1).optional(),
     utm_source: z.string().trim().max(200).optional(),
     utm_medium: z.string().trim().max(200).optional(),
     utm_campaign: z.string().trim().max(200).optional(),
