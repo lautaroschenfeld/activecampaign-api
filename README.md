@@ -1,171 +1,111 @@
-# ActiveCampaign Contact Sync API
-
-## 1. Titulo del proyecto
-
-ActiveCampaign Contact Sync API
-
-## 2. Frase corta de valor del proyecto
-
-Backend API generica para sincronizar contactos y suscribirlos a listas de ActiveCampaign sin hardcodear formularios ni listas.
-
-## 3. Mini bloque tipo "Pensada para equipos que quieren..."
+# ActiveCampaign API
+API backend lista para produccion para sincronizar contactos y suscribirlos a listas de ActiveCampaign de forma segura y reutilizable.
 
 Pensada para equipos que quieren:
 
-- reutilizar un unico endpoint en multiples frontends
-- enviar `list_ids` desde frontend sin tocar backend cuando cambian listas
-- mantener validaciones, idempotencia y anti-spam en un servicio simple
-- correr en VPS con `systemd` y observabilidad por `journald`
+- exponer una API limpia al frontend
+- evitar exponer el token de ActiveCampaign
+- usar `list_ids` dinamicos sin hardcodear listas en backend
+- operar con idempotencia, rate limit y logs claros en VPS con systemd
 
-## 4. Que resuelve
+## Que resuelve
+Este proyecto encapsula el flujo de contactos en ActiveCampaign:
 
-- Recibe datos de contacto y `list_ids`.
-- Valida payload con Zod.
-- Normaliza campos de entrada.
-- Sincroniza (create/update) contacto en ActiveCampaign.
-- Suscribe contacto a una o mas listas.
-- Devuelve respuesta JSON uniforme de exito o error.
+- validacion y normalizacion del payload
+- sync de contacto (create/update) por email
+- suscripcion del contacto a una o mas listas enviadas por frontend
+- respuesta uniforme de exito y error
+- protecciones minimas de seguridad, anti-spam e idempotencia
 
-## 5. Casos de uso tipicos
+## Casos de uso tipicos
 
-- Landing pages con distintas listas destino.
-- Formularios de performance marketing con UTM.
-- Sitios con multiples paginas y un backend comun.
-- Integraciones donde las listas cambian frecuentemente.
+- formularios de registro en landings
+- flujos de captacion con multiples listas de destino
+- integraciones frontend donde las listas cambian seguido
+- sitios con varias paginas y un backend comun
 
-## 6. Stack
+## Stack
 
-- Node.js
-- TypeScript (strict)
+- Node.js 20+
+- TypeScript
 - Express
-- fetch nativo
-- zod
-- pino
-- vitest
+- fetch nativo para llamadas a ActiveCampaign
+- zod para validacion
+- pino para logs estructurados
+- vitest para tests
 
-## 7. Inicio rapido
-
-1. Instalar dependencias:
+## Inicio rapido
+Clonar repositorio, instalar dependencias, configurar `.env` y levantar API.
 
 ```bash
 npm install
-```
-
-2. Crear `.env` desde `.env.example`.
-
-3. Desarrollo:
-
-```bash
+cp .env.example .env
 npm run dev
 ```
 
-4. Build y ejecucion:
+Build para produccion:
 
 ```bash
 npm run build
 npm start
 ```
 
-5. Tests:
+Tests:
 
 ```bash
 npm test
 ```
 
-## 8. Variables de entorno
+## Variables de entorno
 
-Validadas con Zod en `src/config/env.ts`:
+| Variable | Requerida | Default | Descripcion |
+|---|---|---|---|
+| `PORT` | No | `3000` | Puerto HTTP |
+| `NODE_ENV` | No | `development` | `development` \| `test` \| `production` |
+| `LOG_LEVEL` | No | `info` | Nivel de logs |
+| `ALLOWED_ORIGINS` | Si | - | Lista CSV de origenes permitidos |
+| `ACTIVECAMPAIGN_BASE_URL` | Si | - | Base URL de ActiveCampaign |
+| `ACTIVECAMPAIGN_API_TOKEN` | Si | - | Token API de ActiveCampaign (solo backend) |
+| `REQUEST_TIMEOUT_MS` | No | `8000` | Timeout por request al proveedor |
+| `RETRY_MAX_ATTEMPTS` | No | `3` | Reintentos en errores transitorios |
+| `RETRY_INITIAL_MS` | No | `200` | Backoff inicial |
+| `RETRY_MAX_MS` | No | `1500` | Backoff maximo |
+| `IDEMPOTENCY_TTL_MS` | No | `3600000` | TTL del store de idempotencia |
+| `IDEMPOTENCY_WAIT_MS` | No | `1500` | Espera maxima en estado in-progress |
+| `BODY_LIMIT` | No | `100kb` | Limite de `express.json` |
+| `RATE_LIMIT_WINDOW_MS` | No | `60000` | Ventana de rate limit |
+| `RATE_LIMIT_MAX_PER_IP` | No | `60` | Max requests por IP en ventana |
+| `RATE_LIMIT_MAX_PER_EMAIL` | No | `20` | Max requests por email en ventana |
 
-- `PORT`
-- `NODE_ENV`
-- `LOG_LEVEL`
-- `ALLOWED_ORIGINS`
-- `ACTIVECAMPAIGN_BASE_URL`
-- `ACTIVECAMPAIGN_API_TOKEN`
-- `REQUEST_TIMEOUT_MS`
-- `RETRY_MAX_ATTEMPTS`
-- `RETRY_INITIAL_MS`
-- `RETRY_MAX_MS`
-- `IDEMPOTENCY_TTL_MS`
-- `IDEMPOTENCY_WAIT_MS`
-- `BODY_LIMIT`
-- `RATE_LIMIT_WINDOW_MS`
-- `RATE_LIMIT_MAX_PER_IP`
-- `RATE_LIMIT_MAX_PER_EMAIL`
-
-## 9. Seguridad
+## Seguridad
 
 ### Principios
 
-- No confiar en datos del cliente.
-- No aceptar origins no permitidos.
-- Evitar duplicados por reintentos.
-- Limitar abuso por IP/email.
-- No exponer secretos en logs.
+- `ACTIVECAMPAIGN_API_TOKEN` vive solo en backend
+- el frontend nunca ve secretos
+- CORS + trusted-origin guard para limitar origenes permitidos
+- idempotencia para evitar dobles ejecuciones por reintentos
+- rate limit y cooldown para reducir abuso
 
 ### Comportamiento actual
 
-- CORS con allowlist por `ALLOWED_ORIGINS`.
-- Trusted origin guard por `Origin` y `Referer`.
-- `X-Idempotency-Key` obligatorio para `POST /contacts/sync-and-subscribe`.
-- Rate limit en memoria por IP y email.
-- Cooldown anti-spam de 10 segundos por email.
-- Error handler central con contrato uniforme.
+- `GET /health` es publico
+- `POST /contacts/sync-and-subscribe` exige `Origin`/`Referer` permitidos
+- `X-Idempotency-Key` es obligatorio y debe ser UUID valido
+- payload invalido devuelve `400 validation_error`
+- origen no permitido devuelve `403 forbidden_origin`
 
-## 10. Endpoints
+## Endpoints
+
+### Salud
 
 - `GET /health`
+
+### Contactos
+
 - `POST /contacts/sync-and-subscribe`
 
-### GET /health
-
-```json
-{
-  "ok": true,
-  "service": "activecampaign-contact-sync-api",
-  "version": "1.0.0",
-  "environment": "production",
-  "timestamp": "2026-04-10T12:00:00.000Z"
-}
-```
-
-### POST /contacts/sync-and-subscribe
-
-Headers requeridos:
-
-- `Content-Type: application/json`
-- `X-Idempotency-Key: <uuid>`
-- `Origin` y/o `Referer` validos contra `ALLOWED_ORIGINS`
-
-Body permitido:
-
-```json
-{
-  "email": "user@example.com",
-  "first_name": "Juan",
-  "last_name": "Perez",
-  "phone": "+54 9 11 1234 5678",
-  "country": "Argentina",
-  "consent": true,
-  "list_ids": [1, 3, 7],
-  "utm_source": "facebook",
-  "utm_medium": "cpc",
-  "utm_campaign": "mi-campania",
-  "utm_content": "anuncio-1",
-  "utm_term": "marketing",
-  "page_url": "https://midominio.com/landing",
-  "referrer": "https://google.com"
-}
-```
-
-Reglas:
-
-- `email` y `list_ids` son obligatorios.
-- `list_ids` debe ser array no vacio de enteros positivos.
-- `list_ids` se deduplica.
-- No existen aliases ni mapeos formulario -> lista.
-
-## 11. Contrato de respuesta
+## Contrato de respuesta
 
 ### Exito
 
@@ -195,38 +135,53 @@ Reglas:
 }
 ```
 
-## 12. Idempotencia
+## Idempotencia
+Aplica a:
 
-- Header obligatorio: `X-Idempotency-Key` (UUID valido).
-- Fingerprint: `method + path + body canonicalizado`.
-- Misma key + mismo body: replay consistente.
-- Misma key + body distinto: `409 idempotency_conflict`.
-- Estado `in-progress` con espera configurable (`IDEMPOTENCY_WAIT_MS`).
+- `POST /contacts/sync-and-subscribe`
 
-## 13. Rate limiting / anti-spam
+Header obligatorio:
 
-- Rate limit por IP (ventana: `RATE_LIMIT_WINDOW_MS`, max: `RATE_LIMIT_MAX_PER_IP`).
-- Rate limit por email (ventana: `RATE_LIMIT_WINDOW_MS`, max: `RATE_LIMIT_MAX_PER_EMAIL`).
-- Cooldown por email de 10 segundos.
-- Todo en memoria (sin DB, sin Redis).
+```http
+X-Idempotency-Key: <uuid>
+```
 
-## 14. Observabilidad / logs
+Reglas:
 
-- Logging estructurado con Pino.
-- Logs normales por `stdout`.
-- Logs fatales por `stderr`.
-- Preparado para `systemd` + `journald` sin archivos de log custom.
+- sin header: `400 validation_error`
+- key invalida: `400 validation_error`
+- misma key + mismo metodo/path/body canonico: replay exacto sin reejecutar
+- misma key + body distinto: `409 idempotency_conflict`
+- request concurrente con misma key en curso: espera hasta `IDEMPOTENCY_WAIT_MS`
+- si no finaliza dentro de ese tiempo: `409 idempotency_conflict`
 
-Campos de request log:
+Fingerprint usado:
+
+- `method + path + hash SHA-256 del body canonico`
+
+Persistencia actual:
+
+- store en memoria de proceso (single instance)
+
+## Rate limiting / anti-spam
+
+- rate limit por IP en memoria
+- rate limit por email en memoria
+- cooldown de 10 segundos por email
+- respuestas de limite con `429 rate_limit_error`
+- header `Retry-After` cuando corresponde
+
+## Observabilidad / logs
+Cada request genera logs estructurados con:
 
 - `request_id`
 - `method`
 - `path`
 - `status`
-- `duration_ms`
 - `origin`
+- `email_hash` (nunca email plano)
+- `duration_ms`
 - `result`
-- `email_hash`
 
 Eventos de runtime:
 
@@ -237,25 +192,30 @@ Eventos de runtime:
 - `uncaught_exception`
 - `unhandled_rejection`
 
+Salida de logs:
+
+- `stdout`: logs normales
+- `stderr`: logs fatales
+
 No se loggea:
 
 - `ACTIVECAMPAIGN_API_TOKEN`
 - headers sensibles completos
-- payload completo sin redaccion
+- body completo sin redaccion
 
-## 15. Codigos HTTP
+## Codigos HTTP
 
-- `200` OK
-- `204` Preflight CORS
-- `400` Validation / request invalido
-- `403` Forbidden origin
-- `404` Route not found
-- `409` Idempotency conflict
-- `429` Rate limit o cooldown
-- `500` Internal server error
-- `502` Provider error (ActiveCampaign)
+- `200` exito general
+- `204` preflight valido
+- `400` body/validacion invalida
+- `403` origen no permitido
+- `404` ruta no encontrada
+- `409` conflicto de idempotencia
+- `429` rate limit o cooldown
+- `500` error interno
+- `502` error upstream de ActiveCampaign
 
-## 16. Error codes frecuentes
+## Error codes frecuentes
 
 - `validation_error`
 - `forbidden_origin`
@@ -265,20 +225,15 @@ No se loggea:
 - `not_found`
 - `internal_error`
 
-## 17. Ejemplos rapidos
+## Ejemplos rapidos
 
-### Smoke test `/health`
+Smoke test `/health`:
 
 ```bash
 curl -i -s http://localhost:3000/health
 ```
 
-Esperado:
-
-- status `200`
-- body con `ok: true`
-
-### Smoke test `/contacts/sync-and-subscribe`
+Smoke test `/contacts/sync-and-subscribe`:
 
 ```bash
 curl -i -s -X POST http://localhost:3000/contacts/sync-and-subscribe \
@@ -293,30 +248,24 @@ curl -i -s -X POST http://localhost:3000/contacts/sync-and-subscribe \
   }'
 ```
 
-Esperado:
+Replay idempotente:
 
-- status `200`
-- body con `action: "synced"` y `subscribed_list_ids`
+- repetir el request anterior con la misma key
+- esperado: `200` + header `X-Idempotent-Replay: true`
 
-### Replay idempotente (opcional)
-
-Repetir exactamente el request anterior con la misma key.  
-Esperado: status `200` + header `X-Idempotent-Replay: true`.
-
-## 18. Produccion
-
-### Deployment checklist (corto y practico)
+## Produccion
+Deployment checklist corto:
 
 - [ ] `NODE_ENV=production`
 - [ ] `LOG_LEVEL=info` o `warn`
-- [ ] `ALLOWED_ORIGINS` seteado con origins reales (sin comodines)
-- [ ] `ACTIVECAMPAIGN_BASE_URL` y `ACTIVECAMPAIGN_API_TOKEN` validos
+- [ ] `ALLOWED_ORIGINS` con dominios exactos
+- [ ] token y base URL de ActiveCampaign validados
 - [ ] `npm ci && npm run build` ejecutado sin errores
-- [ ] servicio gestionado por `systemd` con `Restart=on-failure`
-- [ ] smoke tests de `/health` y `/contacts/sync-and-subscribe` ejecutados
-- [ ] logs visibles por `journalctl`
+- [ ] servicio levantado con `systemd`
+- [ ] smoke tests ejecutados
+- [ ] logs visibles en `journalctl`
 
-## 19. Despliegue en VPS con systemd
+## Despliegue en VPS con systemd
 
 1. Build:
 
@@ -325,17 +274,14 @@ npm ci
 npm run build
 ```
 
-2. Crear `EnvironmentFile`, por ejemplo:
+2. Crear archivo de entorno:
 
-`/etc/activecampaign-contact-sync.env`
+- `/etc/activecampaign-contact-sync.env`
 
-3. Copiar unit file incluido en el repo:
+3. Copiar unit file:
 
-`deploy/activecampaign-api.service`
-
-Destino recomendado:
-
-`/etc/systemd/system/activecampaign-api.service`
+- origen: `deploy/activecampaign-api.service`
+- destino: `/etc/systemd/system/activecampaign-api.service`
 
 4. Comandos operativos:
 
@@ -346,7 +292,7 @@ sudo systemctl restart activecampaign-api
 sudo systemctl status activecampaign-api
 ```
 
-## 20. Ejemplo completo de service file systemd
+## Ejemplo completo de service file systemd
 
 ```ini
 [Unit]
@@ -370,62 +316,37 @@ StandardError=journal
 WantedBy=multi-user.target
 ```
 
-Notas:
-
-- `WorkingDirectory` debe apuntar al root de deploy.
-- `ExecStart` debe apuntar a `dist/server.js`.
-- `EnvironmentFile` debe incluir todas las variables requeridas.
-- `Restart=on-failure` reinicia el proceso ante crash.
-- `StandardOutput=journal` y `StandardError=journal` dejan logs en `journald`.
-
-## 21. Como ver logs con journalctl
-
-Seguir en vivo:
+## Como ver logs con journalctl
 
 ```bash
 journalctl -u activecampaign-api -f
-```
-
-Forma generica:
-
-```bash
+journalctl -u activecampaign-api -n 200 --no-pager
+journalctl -u activecampaign-api --since today
 journalctl -u <service> -f
 ```
 
-Ultimas lineas:
+## Limitaciones actuales
 
-```bash
-journalctl -u activecampaign-api -n 200 --no-pager
-```
+- idempotencia y rate limit en memoria
+- no hay persistencia tras reinicio
+- no hay coordinacion entre multiples instancias
+- si falla la suscripcion a una lista, falla la operacion
+- no cubre bulk import ni webhooks
 
-Desde hoy:
+## Notas de mantenimiento
 
-```bash
-journalctl -u activecampaign-api --since today
-```
-
-## 22. Limitaciones actuales
-
-- Idempotencia y rate limit en memoria.
-- No hay persistencia de estado tras reinicio.
-- No hay soporte multi-instancia compartiendo limites.
-- El rate limit por IP usa la IP observada por Node.js (`req.ip`); si hay reverse proxy, revisar topologia de red.
-- Si falla una suscripcion a lista, la operacion falla.
-- No cubre bulk import ni webhooks.
-
-## 23. Notas de mantenimiento
-
-- Ejecutar siempre:
+- ejecutar antes de desplegar:
 
 ```bash
 npm run typecheck
 npm test
+npm run build
 ```
 
-- Revisar integracion ActiveCampaign si cambian endpoints/contratos.
-- Mantener dependencias al dia.
+- mantener dependencias actualizadas
+- revisar contrato oficial de ActiveCampaign si cambian endpoints
 
-Referencias oficiales ActiveCampaign usadas:
+Referencias oficiales usadas:
 
 - `POST /contact/sync`: https://developers.activecampaign.com/reference/sync-a-contacts-data
 - `POST /contactLists`: https://developers.activecampaign.com/reference/update-list-status-for-contact
