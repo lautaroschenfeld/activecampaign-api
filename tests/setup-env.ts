@@ -1,0 +1,16 @@
+process.env.PORT = "3001";
+process.env.NODE_ENV = "test";
+process.env.LOG_LEVEL = "silent";
+process.env.ALLOWED_ORIGINS = "https://allowed.example.com";
+process.env.ACTIVECAMPAIGN_BASE_URL = "https://example.api-us1.com/api/3";
+process.env.ACTIVECAMPAIGN_API_TOKEN = "test-token";
+process.env.REQUEST_TIMEOUT_MS = "2000";
+process.env.RETRY_MAX_ATTEMPTS = "1";
+process.env.RETRY_INITIAL_MS = "50";
+process.env.RETRY_MAX_MS = "200";
+process.env.IDEMPOTENCY_TTL_MS = "120000";
+process.env.IDEMPOTENCY_WAIT_MS = "200";
+process.env.BODY_LIMIT = "100kb";
+process.env.RATE_LIMIT_WINDOW_MS = "60000";
+process.env.RATE_LIMIT_MAX_PER_IP = "2";
+process.env.RATE_LIMIT_MAX_PER_EMAIL = "2";

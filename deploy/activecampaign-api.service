@@ -1,0 +1,19 @@
+[Unit]
+Description=ActiveCampaign Contact Sync API
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/activecampaign-contact-sync-api
+EnvironmentFile=/etc/activecampaign-contact-sync.env
+ExecStart=/usr/bin/node /opt/activecampaign-contact-sync-api/dist/server.js
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

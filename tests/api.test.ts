@@ -1,0 +1,372 @@
+import { randomUUID } from "node:crypto";
+import request from "supertest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createApp } from "../src/app";
+import { RateLimitStore } from "../src/services/rate-limit-store";
+
+const allowedOrigin = "https://allowed.example.com";
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json"
+    }
+  });
+}
+
+function buildPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    email: "user@example.com",
+    first_name: " Juan ",
+    last_name: " Perez ",
+    phone: "+54 9 11 1234 5678",
+    country: " Argentina ",
+    consent: true,
+    list_ids: [1],
+    utm_source: "facebook",
+    utm_medium: "cpc",
+    utm_campaign: "campania",
+    utm_content: "anuncio-1",
+    utm_term: "marketing",
+    page_url: "https://midominio.com/landing",
+    referrer: "https://google.com",
+    ...overrides
+  };
+}
+
+function buildSuccessfulFetch(listIds: number[] = [1], contactId = "123") {
+  const fetchMock = vi.fn();
+  fetchMock.mockResolvedValueOnce(jsonResponse(200, { contact: { id: contactId } }));
+  for (const listId of listIds) {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        contactList: {
+          id: String(listId),
+          list: String(listId),
+          contact: contactId,
+          status: "1"
+        }
+      })
+    );
+  }
+  return fetchMock;
+}
+
+function postSync(app: ReturnType<typeof createApp>, payload: Record<string, unknown>, key?: string) {
+  const idempotencyKey = key ?? randomUUID();
+  return request(app)
+    .post("/contacts/sync-and-subscribe")
+    .set("Origin", allowedOrigin)
+    .set("Referer", `${allowedOrigin}/landing`)
+    .set("X-Idempotency-Key", idempotencyKey)
+    .send(payload);
+}
+
+beforeEach(() => {
+  vi.useRealTimers();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("GET /health", () => {
+  it("returns service health payload", async () => {
+    const app = createApp({ fetchImpl: vi.fn() as unknown as typeof fetch });
+    const response = await request(app).get("/health");
+
+    expect(response.status).toBe(200);
+    expect(response.body.ok).toBe(true);
+    expect(response.body.service).toBe("activecampaign-contact-sync-api");
+    expect(typeof response.body.timestamp).toBe("string");
+  });
+});
+
+describe("POST /contacts/sync-and-subscribe", () => {
+  it("syncs and subscribes successfully", async () => {
+    const fetchMock = buildSuccessfulFetch([1, 3, 7]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1, 3, 7] }));
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      ok: true,
+      request_id: expect.any(String),
+      action: "synced",
+      contact_id: 123,
+      subscribed_list_ids: [1, 3, 7],
+      meta: {},
+      warnings: []
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("deduplicates list_ids before provider calls", async () => {
+    const fetchMock = buildSuccessfulFetch([1, 3]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1, 1, 3, 3] }));
+
+    expect(response.status).toBe(200);
+    expect(response.body.subscribed_list_ids).toEqual([1, 3]);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns validation failure", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, { list_ids: [1] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.ok).toBe(false);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
+  it("fails when idempotency key is missing", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", allowedOrigin)
+      .set("Referer", `${allowedOrigin}/landing`)
+      .send(buildPayload());
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
+  it("fails when idempotency key is invalid", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", allowedOrigin)
+      .set("Referer", `${allowedOrigin}/landing`)
+      .set("X-Idempotency-Key", "not-a-uuid")
+      .send(buildPayload());
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
+  it("rejects forbidden origin", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", "https://evil.example.com")
+      .set("Referer", "https://evil.example.com/form")
+      .set("X-Idempotency-Key", randomUUID())
+      .send(buildPayload());
+
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("forbidden_origin");
+  });
+
+  it("rejects invalid list_ids values", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1, "bad"] }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
+  it("rejects empty list_ids", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [] }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+  });
+
+  it("replays same idempotency key with same body", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const key = randomUUID();
+    const payload = buildPayload({ list_ids: [1] });
+
+    const firstResponse = await postSync(app, payload, key);
+    const secondResponse = await postSync(app, payload, key);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(secondResponse.headers["x-idempotent-replay"]).toBe("true");
+    expect(secondResponse.body).toEqual(firstResponse.body);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays when body differences normalize to same payload", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const key = randomUUID();
+
+    const firstResponse = await postSync(
+      app,
+      buildPayload({
+        email: " USER@Example.com ",
+        first_name: "  Juan   Perez  ",
+        list_ids: [1, 1]
+      }),
+      key
+    );
+
+    const secondResponse = await postSync(
+      app,
+      buildPayload({
+        email: "user@example.com",
+        first_name: "Juan Perez",
+        list_ids: [1]
+      }),
+      key
+    );
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(200);
+    expect(secondResponse.headers["x-idempotent-replay"]).toBe("true");
+    expect(secondResponse.body).toEqual(firstResponse.body);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns idempotency conflict for same key and different body", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const key = randomUUID();
+
+    const firstResponse = await postSync(app, buildPayload({ list_ids: [1] }), key);
+    const secondResponse = await postSync(app, buildPayload({ list_ids: [2] }), key);
+
+    expect(firstResponse.status).toBe(200);
+    expect(secondResponse.status).toBe(409);
+    expect(secondResponse.body.error.code).toBe("idempotency_conflict");
+  });
+
+  it("returns provider failure when ActiveCampaign fails", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(500, {
+        errors: [{ title: "Provider error", detail: "Internal error" }]
+      })
+    );
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1] }));
+
+    expect(response.status).toBe(502);
+    expect(response.body.error.code).toBe("provider_error");
+  });
+
+  it("enforces rate limit per IP", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { contact: { id: "124" } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        contactList: { id: "1", list: "1", contact: "124", status: "1" }
+      })
+    );
+
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const first = await postSync(app, buildPayload({ email: "one@example.com" }));
+    const second = await postSync(app, buildPayload({ email: "two@example.com" }));
+    const third = await postSync(app, buildPayload({ email: "three@example.com" }));
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(third.status).toBe(429);
+    expect(third.body.error.code).toBe("rate_limit_error");
+    expect(third.body.error.details.scope).toBe("ip");
+  });
+
+  it("ignores spoofed x-forwarded-for for IP rate limit", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { contact: { id: "124" } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        contactList: { id: "1", list: "1", contact: "124", status: "1" }
+      })
+    );
+
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const first = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", allowedOrigin)
+      .set("Referer", `${allowedOrigin}/landing`)
+      .set("X-Idempotency-Key", randomUUID())
+      .set("X-Forwarded-For", "10.1.1.1")
+      .send(buildPayload({ email: "one-spoof@example.com" }));
+
+    const second = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", allowedOrigin)
+      .set("Referer", `${allowedOrigin}/landing`)
+      .set("X-Idempotency-Key", randomUUID())
+      .set("X-Forwarded-For", "10.2.2.2")
+      .send(buildPayload({ email: "two-spoof@example.com" }));
+
+    const third = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", allowedOrigin)
+      .set("Referer", `${allowedOrigin}/landing`)
+      .set("X-Idempotency-Key", randomUUID())
+      .set("X-Forwarded-For", "10.3.3.3")
+      .send(buildPayload({ email: "three-spoof@example.com" }));
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(third.status).toBe(429);
+    expect(third.body.error.details.scope).toBe("ip");
+  });
+
+  it("enforces rate limit per email", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { contact: { id: "124" } }));
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        contactList: { id: "1", list: "1", contact: "124", status: "1" }
+      })
+    );
+
+    const rateLimitStore = new RateLimitStore(60_000, 10, 2, 0);
+    const app = createApp({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      rateLimitStore
+    });
+
+    const payload = buildPayload({ email: "repeat@example.com" });
+
+    const first = await postSync(app, payload);
+    const second = await postSync(app, payload);
+    const third = await postSync(app, payload);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(third.status).toBe(429);
+    expect(third.body.error.code).toBe("rate_limit_error");
+    expect(third.body.error.details.scope).toBe("email");
+  });
+
+  it("enforces cooldown for repeated submits of same email", async () => {
+    const fetchMock = buildSuccessfulFetch([1]);
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+    const payload = buildPayload({ email: "cooldown@example.com" });
+
+    const first = await postSync(app, payload);
+    const second = await postSync(app, payload);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(429);
+    expect(second.body.error.code).toBe("rate_limit_error");
+    expect(second.body.error.details.scope).toBe("email_cooldown");
+  });
+});
