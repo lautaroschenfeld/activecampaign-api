@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
+import type { ContactSyncQueue, ContactSyncQueueJob } from "../src/services/contact-sync-queue";
 import { RateLimitStore } from "../src/services/rate-limit-store";
 
 const allowedOrigin = "https://allowed.example.com";
@@ -74,6 +75,37 @@ function postSync(app: ReturnType<typeof createApp>, payload: Record<string, unk
     .send(payload);
 }
 
+function postSyncWithMode(
+  app: ReturnType<typeof createApp>,
+  payload: Record<string, unknown>,
+  mode: "sync" | "async",
+  key?: string
+) {
+  const idempotencyKey = key ?? randomUUID();
+  return request(app)
+    .post("/contacts/sync-and-subscribe")
+    .set("Origin", allowedOrigin)
+    .set("Referer", `${allowedOrigin}/landing`)
+    .set("X-Idempotency-Key", idempotencyKey)
+    .set("X-Contact-Sync-Mode", mode)
+    .send(payload);
+}
+
+function createQueueMock() {
+  const jobs: ContactSyncQueueJob[] = [];
+  const queue: ContactSyncQueue = {
+    enqueue: vi.fn(async (job: ContactSyncQueueJob) => {
+      jobs.push(job);
+    }),
+    shutdown: vi.fn(async () => {})
+  };
+
+  return {
+    queue,
+    jobs
+  };
+}
+
 beforeEach(() => {
   vi.useRealTimers();
 });
@@ -134,6 +166,64 @@ describe("POST /contacts/sync-and-subscribe", () => {
       warnings: []
     });
     expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it("returns 202 and enqueues contact sync in async response mode", async () => {
+    const fetchMock = vi.fn();
+    const { queue, jobs } = createQueueMock();
+    const app = createApp({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      contactSyncQueue: queue,
+      responseMode: "async"
+    });
+
+    const response = await postSync(app, buildPayload({ list_ids: [1, 3], tag_ids: [10, 20] }));
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual({
+      ok: true,
+      request_id: expect.any(String),
+      action: "accepted",
+      queued: true
+    });
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.payload.list_ids).toEqual([1, 3]);
+    expect(jobs[0]?.payload.tag_ids).toEqual([10, 20]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("allows overriding response mode with header", async () => {
+    const fetchMock = vi.fn();
+    const { queue, jobs } = createQueueMock();
+    const app = createApp({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      contactSyncQueue: queue,
+      responseMode: "sync"
+    });
+
+    const response = await postSyncWithMode(app, buildPayload({ list_ids: [1, 3] }), "async");
+
+    expect(response.status).toBe(202);
+    expect(response.body.action).toBe("accepted");
+    expect(jobs).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid x-contact-sync-mode header", async () => {
+    const fetchMock = vi.fn();
+    const app = createApp({ fetchImpl: fetchMock as unknown as typeof fetch });
+
+    const response = await request(app)
+      .post("/contacts/sync-and-subscribe")
+      .set("Origin", allowedOrigin)
+      .set("Referer", `${allowedOrigin}/landing`)
+      .set("X-Idempotency-Key", randomUUID())
+      .set("X-Contact-Sync-Mode", "fast")
+      .send(buildPayload());
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("validation_error");
+    expect(response.body.error.details.field).toBe("x-contact-sync-mode");
   });
 
   it("deduplicates list_ids before provider calls", async () => {
@@ -279,6 +369,28 @@ describe("POST /contacts/sync-and-subscribe", () => {
     expect(secondResponse.headers["x-idempotent-replay"]).toBe("true");
     expect(secondResponse.body).toEqual(firstResponse.body);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays same idempotency key in async mode without enqueueing twice", async () => {
+    const fetchMock = vi.fn();
+    const { queue, jobs } = createQueueMock();
+    const app = createApp({
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      contactSyncQueue: queue,
+      responseMode: "async"
+    });
+    const key = randomUUID();
+    const payload = buildPayload({ list_ids: [1] });
+
+    const firstResponse = await postSync(app, payload, key);
+    const secondResponse = await postSync(app, payload, key);
+
+    expect(firstResponse.status).toBe(202);
+    expect(secondResponse.status).toBe(202);
+    expect(secondResponse.headers["x-idempotent-replay"]).toBe("true");
+    expect(secondResponse.body).toEqual(firstResponse.body);
+    expect(jobs).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("replays when body differences normalize to same payload", async () => {

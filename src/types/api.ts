@@ -44,6 +44,15 @@ export interface ContactSyncSuccessResponse {
   warnings: string[];
 }
 
+export interface ContactSyncAcceptedResponse {
+  ok: true;
+  request_id: string;
+  action: "accepted";
+  queued: true;
+}
+
+export type ContactSyncResponseMode = "sync" | "async";
+
 export interface ApiErrorPayload {
   code: string;
   message: string;

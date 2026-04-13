@@ -1,8 +1,14 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { Router } from "express";
 import { z } from "zod";
+import type { ContactSyncQueue } from "../services/contact-sync-queue";
 import { ContactSyncService } from "../services/contact-sync-service";
-import type { ContactSyncRequest, ContactSyncSuccessResponse } from "../types/api";
+import type {
+  ContactSyncAcceptedResponse,
+  ContactSyncRequest,
+  ContactSyncResponseMode,
+  ContactSyncSuccessResponse
+} from "../types/api";
 import { normalizeContactSyncInput } from "../utils/normalize";
 import { isJsonContentType } from "../utils/http";
 import { ValidationError } from "../utils/errors";
@@ -29,6 +35,8 @@ const contactSyncSchema = z
 
 interface ContactsRouterOptions {
   contactSyncService: ContactSyncService;
+  contactSyncQueue: ContactSyncQueue;
+  responseMode: ContactSyncResponseMode;
   trustedOriginMiddleware: RequestHandler;
   idempotencyMiddleware: RequestHandler;
   rateLimitMiddleware: RequestHandler;
@@ -80,6 +88,25 @@ function validateAndNormalizePayload(req: Request, _res: Response, next: NextFun
   next();
 }
 
+function resolveResponseMode(
+  req: Request,
+  defaultMode: ContactSyncResponseMode
+): ContactSyncResponseMode {
+  const headerValue = req.header("x-contact-sync-mode")?.trim().toLowerCase();
+  if (!headerValue) {
+    return defaultMode;
+  }
+
+  if (headerValue === "sync" || headerValue === "async") {
+    return headerValue;
+  }
+
+  throw new ValidationError("Invalid x-contact-sync-mode header", {
+    field: "x-contact-sync-mode",
+    allowed_values: ["sync", "async"]
+  });
+}
+
 export function createContactsRouter(options: ContactsRouterOptions): Router {
   const router = Router();
 
@@ -95,6 +122,31 @@ export function createContactsRouter(options: ContactsRouterOptions): Router {
         const payload = req.normalizedBody;
         if (!payload) {
           throw new ValidationError("Invalid request body");
+        }
+
+        const responseMode = resolveResponseMode(req, options.responseMode);
+
+        if (responseMode === "async") {
+          await options.contactSyncQueue.enqueue({
+            requestId: req.requestId,
+            idempotencyKey: req.idempotency?.key,
+            payload
+          });
+
+          const response: ContactSyncAcceptedResponse = {
+            ok: true,
+            request_id: req.requestId,
+            action: "accepted",
+            queued: true
+          };
+
+          if (req.idempotency) {
+            req.idempotency.complete(202, response);
+          }
+
+          res.locals.result = "accepted";
+          res.status(202).json(response);
+          return;
         }
 
         const result = await options.contactSyncService.syncAndSubscribe(payload);

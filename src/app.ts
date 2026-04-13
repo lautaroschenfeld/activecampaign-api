@@ -13,15 +13,22 @@ import { createContactsRouter } from "./routes/contacts";
 import { createHealthRouter } from "./routes/health";
 import { ActiveCampaignClient } from "./services/activecampaign-client";
 import { ActiveCampaignService } from "./services/activecampaign-service";
+import {
+  PersistentContactSyncQueue,
+  type ContactSyncQueue
+} from "./services/contact-sync-queue";
 import { ContactSyncService } from "./services/contact-sync-service";
 import { IdempotencyStore } from "./services/idempotency-store";
 import { RateLimitStore } from "./services/rate-limit-store";
+import type { ContactSyncResponseMode } from "./types/api";
 import { AppError } from "./utils/errors";
 
 export interface CreateAppOptions {
   fetchImpl?: typeof fetch;
   logger?: Logger;
   contactSyncService?: ContactSyncService;
+  contactSyncQueue?: ContactSyncQueue;
+  responseMode?: ContactSyncResponseMode;
   idempotencyStore?: IdempotencyStore;
   rateLimitStore?: RateLimitStore;
 }
@@ -54,6 +61,14 @@ export function createApp(options: CreateAppOptions = {}): Express {
         })
       )
     );
+  const contactSyncQueue =
+    options.contactSyncQueue ??
+    new PersistentContactSyncQueue(contactSyncService, logger, {
+      queueFilePath: env.CONTACT_SYNC_QUEUE_FILE,
+      retryInitialMs: env.CONTACT_SYNC_QUEUE_RETRY_INITIAL_MS,
+      retryMaxMs: env.CONTACT_SYNC_QUEUE_RETRY_MAX_MS
+    });
+  const responseMode = options.responseMode ?? env.CONTACT_SYNC_RESPONSE_MODE;
 
   const app = express();
   app.disable("x-powered-by");
@@ -80,6 +95,8 @@ export function createApp(options: CreateAppOptions = {}): Express {
     "/contacts",
     createContactsRouter({
       contactSyncService,
+      contactSyncQueue,
+      responseMode,
       trustedOriginMiddleware: trustedOriginMiddleware(env.ALLOWED_ORIGINS),
       idempotencyMiddleware: idempotencyMiddleware(idempotencyStore, env.IDEMPOTENCY_WAIT_MS),
       rateLimitMiddleware: rateLimitMiddleware(rateLimitStore)
@@ -92,7 +109,10 @@ export function createApp(options: CreateAppOptions = {}): Express {
 
   app.use(errorHandler);
 
-  app.locals.shutdown = () => {
+  app.locals.shutdown = async () => {
+    await contactSyncQueue.shutdown({
+      drainTimeoutMs: env.CONTACT_SYNC_QUEUE_SHUTDOWN_DRAIN_MS
+    });
     idempotencyStore.shutdown();
     rateLimitStore.shutdown();
   };

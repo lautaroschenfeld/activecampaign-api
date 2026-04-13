@@ -18,13 +18,6 @@ Este proyecto encapsula el flujo de contactos en ActiveCampaign:
 - respuesta uniforme de exito y error
 - protecciones minimas de seguridad, anti-spam e idempotencia
 
-## Casos de uso tipicos
-
-- formularios de registro en landings
-- flujos de captacion con multiples listas de destino
-- integraciones frontend donde las listas cambian seguido
-- sitios con varias paginas y un backend comun
-
 ## Stack
 
 - Node.js 20+
@@ -67,6 +60,11 @@ npm test
 | `ALLOWED_ORIGINS` | Si | - | Lista CSV de origenes permitidos |
 | `ACTIVECAMPAIGN_BASE_URL` | Si | - | Base URL de ActiveCampaign |
 | `ACTIVECAMPAIGN_API_TOKEN` | Si | - | Token API de ActiveCampaign (solo backend) |
+| `CONTACT_SYNC_RESPONSE_MODE` | No | `sync` | `sync` espera resultado proveedor, `async` encola y responde `202` |
+| `CONTACT_SYNC_QUEUE_FILE` | No | `./data/contact-sync-queue.json` | Archivo persistente para cola async |
+| `CONTACT_SYNC_QUEUE_RETRY_INITIAL_MS` | No | `5000` | Backoff inicial de reintento en cola async |
+| `CONTACT_SYNC_QUEUE_RETRY_MAX_MS` | No | `300000` | Backoff maximo de reintento en cola async |
+| `CONTACT_SYNC_QUEUE_SHUTDOWN_DRAIN_MS` | No | `15000` | Tiempo maximo para drenar cola al apagar |
 | `REQUEST_TIMEOUT_MS` | No | `8000` | Timeout por request al proveedor |
 | `RETRY_MAX_ATTEMPTS` | No | `3` | Reintentos en errores transitorios |
 | `RETRY_INITIAL_MS` | No | `200` | Backoff inicial |
@@ -146,6 +144,17 @@ No incluido en esta API:
 }
 ```
 
+### Exito async (`202 Accepted`)
+
+```json
+{
+  "ok": true,
+  "request_id": "req_xxx",
+  "action": "accepted",
+  "queued": true
+}
+```
+
 ### Error
 
 ```json
@@ -159,6 +168,13 @@ No incluido en esta API:
   }
 }
 ```
+
+## Modo de respuesta (`sync` / `async`)
+
+- modo default por env: `CONTACT_SYNC_RESPONSE_MODE=sync|async`
+- override por request (opcional): header `X-Contact-Sync-Mode: sync|async`
+- en `async` la API responde `202` inmediato y procesa ActiveCampaign en cola persistente en disco
+- los jobs fallidos se reintentan con backoff exponencial hasta completar
 
 ## Idempotencia
 Aplica a:
